@@ -261,7 +261,7 @@
       <div class="card-header"><div class="card-title">Strategy Engine</div><span class="sebi-tag">SEBI Compliant</span></div>
       <div class="form-group">
         <label class="form-label">Strategy</label>
-        <select class="form-select" id="strategySelect" onchange="updateStrategy()">
+        <select class="form-select" id="strategySelect" onchange="updateStrategy();redrawSignalChart();">
           <option value="ema">EMA Crossover</option>
           <option value="rsi">RSI Reversal</option>
           <option value="macd">MACD Momentum</option>
@@ -271,7 +271,7 @@
       </div>
       <div class="form-group">
         <label class="form-label">Instrument</label>
-        <select class="form-select" id="symbolSelect" onchange="updateSignal()">
+        <select class="form-select" id="symbolSelect" onchange="updateSignal();redrawSignalChart();">
           <option>NIFTY 50</option><option>BANKNIFTY</option><option>RELIANCE</option>
           <option>TCS</option><option>INFY</option><option>HDFC BANK</option>
           <option>ICICI BANK</option><option>SENSEX</option>
@@ -279,7 +279,7 @@
       </div>
       <div class="form-group">
         <label class="form-label">Timeframe</label>
-        <select class="form-select">
+        <select class="form-select" onchange="redrawSignalChart()">
           <option>5 Min</option><option>15 Min</option><option selected>1 Hour</option><option>Daily</option><option>Weekly</option>
         </select>
       </div>
@@ -639,16 +639,108 @@ function updateStrategy(){
     <div><div style="font-size:10px;color:var(--text3)">MOMENTUM</div><div style="font-family:var(--mono);font-size:17px;color:var(--green)">STRONG</div></div>`;
 }
 updateStrategy();
-function initSignalChart(){
-  const ctx=document.getElementById('signalChart').getContext('2d');
-  const labels=Array.from({length:30},(_,i)=>`D-${30-i}`);
-  new Chart(ctx,{type:'line',data:{labels,datasets:[
-    {label:'Signal',data:labels.map(()=>Math.random()*100-50),borderColor:'#ff6b35',backgroundColor:'rgba(255,107,53,.08)',tension:.4,fill:true,borderWidth:2,pointRadius:0},
-    {label:'Confidence',data:labels.map(()=>Math.random()*80-20),borderColor:'#7c3aed',backgroundColor:'rgba(124,58,237,.08)',tension:.4,fill:true,borderWidth:2,pointRadius:0,borderDash:[4,2]},
-  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'rgba(13,20,32,.95)',borderColor:'#1e2d40',borderWidth:1,titleColor:'#94a3b8',bodyColor:'#e2e8f0'}},
-  scales:{x:{grid:{color:'rgba(30,45,64,.4)'},ticks:{color:'#64748b',font:{size:10},maxTicksLimit:8}},y:{grid:{color:'rgba(30,45,64,.4)'},ticks:{color:'#64748b',font:{size:11}}}}}});
+// Seeded random so each strategy+instrument+timeframe combo gives distinct but consistent-looking data
+function seededRand(seed){
+  let s=seed;
+  return function(){s=(s*1664525+1013904223)&0xffffffff;return(s>>>0)/0xffffffff;};
 }
-function runStrategy(){updateSignal();addAlert('info','Strategy re-analysed — Signal: '+currentSignal);}
+
+let signalChartInstance=null;
+
+function getChartSeed(){
+  const strat=document.getElementById('strategySelect')?document.getElementById('strategySelect').value:'ema';
+  const sym=document.getElementById('symbolSelect')?document.getElementById('symbolSelect').value:'NIFTY 50';
+  const tf=document.querySelector('#sec-strategy .form-select:nth-of-type(3)')||{value:'1h'};
+  // Make a numeric seed from the combined string
+  const str=strat+sym+(tf.value||'1h');
+  let hash=0;for(let i=0;i<str.length;i++){hash=((hash<<5)-hash)+str.charCodeAt(i);hash|=0;}
+  return Math.abs(hash);
+}
+
+function getStrategyChartStyle(strat){
+  // Each strategy has a different visual signature
+  const styles={
+    ema:{amplitude:40,smoothness:.5,drift:.3,label:'EMA Signal'},
+    rsi:{amplitude:30,smoothness:.3,drift:0,label:'RSI Signal'},   // more choppy, mean-reverting
+    macd:{amplitude:50,smoothness:.45,drift:.2,label:'MACD Signal'},
+    bb:{amplitude:35,smoothness:.35,drift:.1,label:'BB Signal'},
+    supertrend:{amplitude:45,smoothness:.55,drift:.4,label:'Supertrend Signal'}, // smoother trending
+  };
+  return styles[strat]||styles.ema;
+}
+
+function generateStrategyData(seed,n,amplitude,smoothness,drift){
+  const rand=seededRand(seed);
+  const data=[];let v=0;
+  for(let i=0;i<n;i++){
+    v=v*smoothness+(rand()-.48+drift*.01)*amplitude*(1-smoothness);
+    data.push(parseFloat(v.toFixed(2)));
+  }
+  return data;
+}
+
+function getTimeframeLabels(tf,n){
+  const fmt={
+    '5 Min':'5m','15 Min':'15m','1 Hour':'1H','Daily':'D','Weekly':'W'
+  };
+  const unit=fmt[tf]||'1H';
+  return Array.from({length:n},(_,i)=>`-${(n-i)*1}${unit}`);
+}
+
+function redrawSignalChart(){
+  const strat=document.getElementById('strategySelect')?document.getElementById('strategySelect').value:'ema';
+  const tfEl=document.querySelectorAll('#sec-strategy .form-select')[2];
+  const tf=tfEl?tfEl.value:'1 Hour';
+  const style=getStrategyChartStyle(strat);
+  const seed=getChartSeed();
+  const n=40;
+  const labels=getTimeframeLabels(tf,n);
+  const signalData=generateStrategyData(seed,n,style.amplitude,style.smoothness,style.drift);
+  const confData=generateStrategyData(seed+999,n,style.amplitude*.7,style.smoothness+.1,style.drift*.5);
+
+  const ctx=document.getElementById('signalChart').getContext('2d');
+  if(signalChartInstance){signalChartInstance.destroy();signalChartInstance=null;}
+  signalChartInstance=new Chart(ctx,{
+    type:'line',
+    data:{labels,datasets:[
+      {label:style.label,data:signalData,borderColor:'#ff6b35',backgroundColor:'rgba(255,107,53,.08)',tension:.4,fill:true,borderWidth:2,pointRadius:0},
+      {label:'Confidence Band',data:confData,borderColor:'#7c3aed',backgroundColor:'rgba(124,58,237,.08)',tension:.4,fill:true,borderWidth:2,pointRadius:0,borderDash:[4,2]},
+    ]},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      animation:{duration:600,easing:'easeInOutQuart'},
+      plugins:{
+        legend:{display:false},
+        tooltip:{backgroundColor:'rgba(13,20,32,.95)',borderColor:'#1e2d40',borderWidth:1,titleColor:'#94a3b8',bodyColor:'#e2e8f0',
+          callbacks:{title:items=>`${items[0].label}`,label:item=>`${item.dataset.label}: ${item.raw}`}
+        }
+      },
+      scales:{
+        x:{grid:{color:'rgba(30,45,64,.4)'},ticks:{color:'#64748b',font:{size:10},maxTicksLimit:10}},
+        y:{grid:{color:'rgba(30,45,64,.4)'},ticks:{color:'#64748b',font:{size:11}},
+          title:{display:true,text:style.label,color:'rgba(255,107,53,.5)',font:{size:9}}}
+      }
+    }
+  });
+
+  // Also update the chart card title to reflect current selection
+  const sym=document.getElementById('symbolSelect')?document.getElementById('symbolSelect').value:'NIFTY 50';
+  const stratNames={ema:'EMA Crossover',rsi:'RSI Reversal',macd:'MACD Momentum',bb:'Bollinger Bands',supertrend:'Supertrend'};
+  const titleEl=document.querySelector('#sec-strategy .card:nth-child(2) .card-title');
+  if(titleEl)titleEl.textContent=`${stratNames[strat]||strat} · ${sym} · ${tf}`;
+}
+
+function initSignalChart(){redrawSignalChart();}
+
+function runStrategy(){
+  redrawSignalChart();
+  updateSignal();
+  const strat=document.getElementById('strategySelect')?document.getElementById('strategySelect').value:'ema';
+  const sym=document.getElementById('symbolSelect')?document.getElementById('symbolSelect').value:'NIFTY 50';
+  const tf=document.querySelectorAll('#sec-strategy .form-select')[2];
+  const tfv=tf?tf.value:'1 Hour';
+  addAlert('info',`Analysis complete: ${strat.toUpperCase()} on ${sym} (${tfv}) — Signal: ${currentSignal}`);
+}
 
 // === RISK ===
 function updateRisk(){
